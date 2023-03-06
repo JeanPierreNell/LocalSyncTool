@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"io/ioutil"
 	"log"
 	"os"
+	"time"
 
 	"github.com/kardianos/service"
 )
@@ -14,6 +17,7 @@ import (
 const serviceName = "Local Sync service"
 const serviceDescription = "Simple Service to sync local linked directories."
 const configLocation = "config.json"
+const chunkSize = 64000
 
 type program struct{}
 
@@ -74,30 +78,182 @@ func SyncDirectory(locationOne string, LocationTwo string) {
 		log.Fatal(err)
 	}
 
-	var longEntries []fs.DirEntry
-	var shortEntries []fs.DirEntry
+	// var filesForOne []string
+	// var filesForTwo []string
 
-	var shortFileName string
-	var longFileName string
+	// for i := 0; i < len(entriesOne); i++ {
+	// 	if !contains(entriesTwo, entriesOne[i]) {
+	// 		filesForOne = append(filesForOne, entriesOne[i].Name())
+	// 	}
+	// }
 
-	if len(entriesOne) > len(entriesTwo) {
-		longEntries = entriesOne
-		shortEntries = entriesTwo
-		shortFileName = LocationTwo
-		longFileName = locationOne
-	} else {
-		longEntries = entriesTwo
-		shortEntries = entriesOne
-		shortFileName = locationOne
-		longFileName = LocationTwo
+	// for i := 0; i < len(entriesTwo); i++ {
+	// 	if !contains(entriesOne, entriesTwo[i]) {
+	// 		filesForTwo = append(filesForTwo, entriesTwo[i].Name())
+	// 	}
+	// }
+
+	// compareDirectories(entriesOne, entriesTwo)
+	missingFiles1, nonUniqueFiles := missingFiles(entriesTwo, entriesOne)
+	fmt.Println("Missing Files:")
+	fmt.Println(nonUniqueFiles)
+	outdatedFiles := nonUniqueFileCompare(nonUniqueFiles, locationOne, LocationTwo)
+
+	filesForLocationOne := append(missingFiles1, outdatedFiles...)
+
+	copyFiles(filesForLocationOne, locationOne, LocationTwo)
+
+	missingFiles2, nonUniqueFiles := missingFiles(entriesOne, entriesTwo)
+	fmt.Println("Missing Files:")
+	fmt.Println(nonUniqueFiles)
+	outdatedFiles2 := nonUniqueFileCompare(nonUniqueFiles, LocationTwo, locationOne)
+
+	filesForLocationTwo := append(missingFiles2, outdatedFiles2...)
+
+	copyFiles(filesForLocationTwo, LocationTwo, locationOne)
+}
+
+func copyFiles(files []string, source string, destination string) {
+	for i := 0; i < len(files); i++ {
+		copy(source+files[i], destination+files[i])
+	}
+}
+
+func compareDirectories(sourceDirectory []fs.DirEntry, comparisonDirectory []fs.DirEntry) {
+
+	var outdatedFiles []string
+	var nonUniqueFiles []fs.DirEntry
+
+	for i := 0; i < len(comparisonDirectory); i++ {
+		if !contains(sourceDirectory, comparisonDirectory[i]) {
+			outdatedFiles = append(outdatedFiles, comparisonDirectory[i].Name())
+		} else {
+			nonUniqueFiles = append(nonUniqueFiles, comparisonDirectory[i])
+		}
 	}
 
-	fmt.Println("Long Entries : " + longFileName)
-	fmt.Println("Short Entries : " + shortFileName)
+	for i := 0; i < len(nonUniqueFiles); i++ {
+		//The file has to be opened first
+		file, fileError := os.Open("" + nonUniqueFiles[i].Name())
 
-	for i := 0; i < len(longEntries); i++ {
-		if !contains(shortEntries, longEntries[i]) {
-			copy(longFileName+longEntries[i].Name(), shortFileName+longEntries[i].Name())
+		if fileError != nil {
+			fmt.Println(fileError)
+			return
+		}
+
+		// The file descriptor (File*) has to be used to get metadata
+		fileInfo, err := file.Stat()
+
+		// The file can be closed
+		file.Close()
+
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		fmt.Println(fileInfo.Name())
+		fmt.Println(fileInfo.ModTime())
+	}
+
+}
+
+func missingFiles(sourceDirectory []fs.DirEntry, comparisonDirectory []fs.DirEntry) ([]string, []fs.DirEntry) {
+	var outdatedFiles []string
+	var nonUniqueFiles []fs.DirEntry
+
+	for i := 0; i < len(comparisonDirectory); i++ {
+		if !contains(sourceDirectory, comparisonDirectory[i]) {
+			outdatedFiles = append(outdatedFiles, comparisonDirectory[i].Name())
+		} else {
+			nonUniqueFiles = append(nonUniqueFiles, comparisonDirectory[i])
+		}
+	}
+
+	return outdatedFiles, nonUniqueFiles
+}
+
+func nonUniqueFileCompare(nonUniqueFiles []fs.DirEntry, locationOne string, locationTwo string) []string {
+	var outdatedFiles []string
+
+	for i := 0; i < len(nonUniqueFiles); i++ {
+
+		fileOneModTime, fileOneError := getFileModTime(locationOne + nonUniqueFiles[i].Name())
+		if fileOneError != nil {
+			fmt.Println(fileOneError)
+		}
+
+		fileTwoModTime, fileTwoError := getFileModTime(locationTwo + nonUniqueFiles[i].Name())
+		if fileTwoError != nil {
+			fmt.Println(fileTwoError)
+		}
+
+		if fileOneModTime.After(fileTwoModTime) && !(deepCompare(locationOne+nonUniqueFiles[i].Name(), locationTwo+nonUniqueFiles[i].Name())) {
+			outdatedFiles = append(outdatedFiles, nonUniqueFiles[i].Name())
+		}
+
+	}
+
+	return outdatedFiles
+}
+
+func getFileModTime(filepath string) (time.Time, error) {
+	//The file has to be opened first
+	file, fileError := os.Open(filepath)
+
+	if fileError != nil {
+		fmt.Println(fileError)
+		return time.Time{}, fileError
+	}
+
+	// The file descriptor (File*) has to be used to get metadata
+	fileInfo, err := file.Stat()
+
+	// The file can be closed
+	file.Close()
+
+	if err != nil {
+		fmt.Println(err)
+		return time.Time{}, err
+	}
+
+	return fileInfo.ModTime(), nil
+}
+
+func deepCompare(file1, file2 string) bool {
+	// Check file size ...
+
+	f1, err := os.Open(file1)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f1.Close()
+
+	f2, err := os.Open(file2)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f2.Close()
+
+	for {
+		b1 := make([]byte, chunkSize)
+		_, err1 := f1.Read(b1)
+
+		b2 := make([]byte, chunkSize)
+		_, err2 := f2.Read(b2)
+
+		if err1 != nil || err2 != nil {
+			if err1 == io.EOF && err2 == io.EOF {
+				return true
+			} else if err1 == io.EOF || err2 == io.EOF {
+				return false
+			} else {
+				log.Fatal(err1, err2)
+			}
+		}
+
+		if !bytes.Equal(b1, b2) {
+			return false
 		}
 	}
 }
@@ -110,6 +266,12 @@ func contains(s []fs.DirEntry, str fs.DirEntry) bool {
 	}
 
 	return false
+}
+
+func RemoveIndex(s []fs.DirEntry, index int) []fs.DirEntry {
+	ret := make([]fs.DirEntry, 0)
+	ret = append(ret, s[:index]...)
+	return append(ret, s[index+1:]...)
 }
 
 func copy(sourceFilePath string, DestinationFilePath string) {

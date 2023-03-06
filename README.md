@@ -1,6 +1,7 @@
 # LocalSyncTool
 Tool that sync two local directories.
 
-Current Version is very rough. Will only copy over missing files from the larger to the smaller directory. 
+Updated to perform bi-directional Copy.
+Based off of missing files and file last modified date + Byte comparison.
 
-Very first version - extremly rough
+Code cleanup and refactor pending
